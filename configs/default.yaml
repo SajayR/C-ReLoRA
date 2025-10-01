@@ -1,0 +1,84 @@
+# Default configuration for DinoV2 LoRA training
+
+# Data configuration
+data:
+  dataset_path: "/speedy/ImageNet"
+  image_size: 224
+  batch_size: 256
+  num_workers: 8
+  pin_memory: true
+  
+# Model configuration
+model:
+  name: "facebook/dinov2-small"  # Options: facebook/dinov2-small, facebook/dinov2-base, facebook/dinov2-large
+  num_classes: 1000
+  dropout: 0.1
+
+# LoRA configuration
+lora:
+  r: 16                    # LoRA rank
+  alpha: 32               # LoRA scaling parameter
+  dropout: 0.1            # LoRA dropout
+  target_modules:         # Modules to apply LoRA to
+    - "query"
+    - "key" 
+    - "value"
+    - "dense"
+  bias: "none"            # Bias type for LoRA
+
+# Training configuration
+training:
+  epochs: 10
+  learning_rate: 0.0003
+  weight_decay: 0.01
+  warmup_steps: 1000
+  gradient_clip_norm: 1.0
+  save_steps: 1000
+  eval_steps: 500
+  logging_steps: 1
+  
+# Optimizer configuration
+optimizer:
+  type: "adamw"           # Options: adamw, adam, sgd
+  betas: [0.9, 0.999]
+  eps: 0.00000001
+
+# Scheduler configuration  
+scheduler:
+  type: "cosine"          # Options: cosine, linear, constant
+  warmup_ratio: 0.1
+
+# Logging and saving
+logging:
+  use_wandb: true
+  project_name: "dinov2-imagenet"
+  run_name: baseline_default          # Will be auto-generated if null
+  log_dir: "./logs"
+  
+# Checkpointing
+checkpointing:
+  save_dir: "./checkpoints"
+  save_total_limit: 3
+  save_best_only: false
+  metric_for_best: "val_accuracy"
+  
+# Evaluation
+evaluation:
+  metrics: ["accuracy", "top5_accuracy"]
+  eval_on_start: false
+
+# Mixed precision training
+mixed_precision:
+  enabled: true
+  dtype: "bf16"           # Options: fp16, bf16
+
+# Distributed training
+distributed:
+  enabled: false
+  backend: "nccl"
+
+# Reproducibility
+seed: 42
+
+# Device
+device: "cuda"            # Options: auto, cuda, cpu
