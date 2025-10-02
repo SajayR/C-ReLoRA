@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import re
 import time
 from copy import deepcopy
 from pathlib import Path
@@ -12,7 +13,7 @@ from typing import Dict, Iterable, List
 
 import torch
 import torch.nn as nn
-from torch.cuda.amp import GradScaler, autocast
+from torch.amp import GradScaler, autocast
 from tqdm import tqdm
 
 try:
@@ -33,21 +34,80 @@ from utils.training_utils import (
     set_seed,
     setup_logging,
 )
+import os
+
+os.environ["TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL"] = "1"
 
 LOGGER = logging.getLogger("train")
 
 
+def _slugify(value: str | None) -> str:
+    if not value:
+        return ""
+    text = str(value).strip()
+    if not text:
+        return ""
+    text = text.replace("/", "-")
+    text = re.sub(r"\s+", "-", text)
+    text = re.sub(r"[^0-9A-Za-z_.-]", "-", text)
+    text = re.sub(r"-+", "-", text)
+    return text.strip("-")
+
+
+def build_run_labels(
+    experiment_cfg: Dict[str, any],
+    model_cfg: Dict[str, any],
+    logging_cfg: Dict[str, any],
+    dataset_name: str,
+) -> tuple[str, str]:
+    custom = logging_cfg.get("run_name")
+    if custom:
+        custom_slug = _slugify(custom) or "run"
+        return custom_slug, custom_slug
+
+    dataset_slug = _slugify(dataset_name) or "dataset"
+    model_slug = _slugify(model_cfg.get("name")) or "model"
+
+    base_parts = [dataset_slug, model_slug]
+    base_label = "_".join(base_parts)
+
+    suffix = _slugify(
+        experiment_cfg.get("name_suffix")
+        or logging_cfg.get("run_name_suffix")
+        or logging_cfg.get("run_suffix")
+    )
+    run_slug = base_label if not suffix else f"{base_label}_{suffix}"
+
+    return base_label, run_slug
+
+
 def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train models on folder-based vision datasets")
-    parser.add_argument("--config", default="configs/default.yaml", help="Path or name of the YAML config")
-    parser.add_argument("--datasets", nargs="*", help="Optional dataset names to train (filters config list)")
+    parser = argparse.ArgumentParser(
+        description="Train models on folder-based vision datasets"
+    )
+    parser.add_argument(
+        "--config",
+        default="configs/default.yaml",
+        help="Path or name of the YAML config",
+    )
+    parser.add_argument(
+        "--datasets",
+        nargs="*",
+        help="Optional dataset names to train (filters config list)",
+    )
     parser.add_argument("--override", nargs="*", help="Dotlist overrides key=value")
-    parser.add_argument("--no-wandb", action="store_true", help="Disable W&B logging even if config enables it")
+    parser.add_argument(
+        "--no-wandb",
+        action="store_true",
+        help="Disable W&B logging even if config enables it",
+    )
     parser.add_argument("--log-level", default="INFO")
     return parser.parse_args(argv)
 
 
-def build_dataset_specs(config: Dict[str, any], selected: List[str] | None) -> List[DatasetSpec]:
+def build_dataset_specs(
+    config: Dict[str, any], selected: List[str] | None
+) -> List[DatasetSpec]:
     data_defaults = config.get("data", {})
     entries = config.get("datasets", [])
     processed: List[Dict[str, any]] = []
@@ -71,21 +131,41 @@ def build_dataset_specs(config: Dict[str, any], selected: List[str] | None) -> L
         spec = DatasetSpec(
             name=entry["name"],
             root=entry.get("root", data_defaults.get("root", "/speedy/datasets")),
-            train_split=entry.get("train_split", data_defaults.get("train_split", "train")),
+            train_split=entry.get(
+                "train_split", data_defaults.get("train_split", "train")
+            ),
             val_split=entry.get("val_split", data_defaults.get("val_split")),
-            image_size=int(entry.get("image_size", data_defaults.get("image_size", 224))),
-            batch_size=int(entry.get("batch_size", data_defaults.get("batch_size", 64))),
-            num_workers=int(entry.get("num_workers", data_defaults.get("num_workers", 8))),
-            pin_memory=bool(entry.get("pin_memory", data_defaults.get("pin_memory", True))),
-            persistent_workers=bool(entry.get("persistent_workers", data_defaults.get("persistent_workers", True))),
+            image_size=int(
+                entry.get("image_size", data_defaults.get("image_size", 224))
+            ),
+            batch_size=int(
+                entry.get("batch_size", data_defaults.get("batch_size", 64))
+            ),
+            num_workers=int(
+                entry.get("num_workers", data_defaults.get("num_workers", 8))
+            ),
+            pin_memory=bool(
+                entry.get("pin_memory", data_defaults.get("pin_memory", True))
+            ),
+            persistent_workers=bool(
+                entry.get(
+                    "persistent_workers", data_defaults.get("persistent_workers", True)
+                )
+            ),
             augment=bool(entry.get("augment", data_defaults.get("augment", True))),
-            normalization=entry.get("normalization", data_defaults.get("normalization", "imagenet")),
-            drop_last=bool(entry.get("drop_last", data_defaults.get("drop_last", True))),
+            normalization=entry.get(
+                "normalization", data_defaults.get("normalization", "imagenet")
+            ),
+            drop_last=bool(
+                entry.get("drop_last", data_defaults.get("drop_last", True))
+            ),
         )
         specs.append(spec)
 
     if not specs:
-        raise ValueError("No datasets specified. Add entries under 'datasets' in the config or use --datasets.")
+        raise ValueError(
+            "No datasets specified. Add entries under 'datasets' in the config or use --datasets."
+        )
     return specs
 
 
@@ -139,9 +219,10 @@ class RunLogger:
             self.wandb_run.finish()
 
 
-def prepare_run_dirs(base_dir: Path, dataset_name: str, experiment_name: str) -> Path:
+def prepare_run_dirs(base_dir: Path, dataset_name: str, run_slug: str) -> Path:
     timestamp = time.strftime("%Y%m%d-%H%M%S")
-    run_name = f"{experiment_name}-{dataset_name}-{timestamp}" if experiment_name else f"run-{dataset_name}-{timestamp}"
+    safe_slug = run_slug or _slugify(dataset_name) or "run"
+    run_name = f"{safe_slug}-{timestamp}"
     run_dir = base_dir / dataset_name / run_name
     run_dir.mkdir(parents=True, exist_ok=True)
     return run_dir
@@ -182,14 +263,14 @@ def train_epoch(
     running_top5 = 0.0
     epoch_start = time.time()
 
-    progress = tqdm(loader, desc=f"Train {epoch+1}/{epochs}")
+    progress = tqdm(loader, desc=f"Train {epoch + 1}/{epochs}")
     optimizer.zero_grad(set_to_none=True)
 
     for step, (images, targets) in enumerate(progress):
         images = images.to(device, non_blocking=True)
         targets = targets.to(device, non_blocking=True)
 
-        with autocast(enabled=use_amp, dtype=amp_dtype):
+        with autocast(enabled=use_amp, dtype=amp_dtype, device_type="cuda"):
             outputs = model(images)
             loss = criterion(outputs, targets) / grad_accum
 
@@ -234,12 +315,16 @@ def train_epoch(
         total_loss += batch_loss
         total_samples += targets.size(0)
         running_top1 += accuracy(outputs.detach(), targets.detach()) * targets.size(0)
-        running_top5 += top_k_accuracy(outputs.detach(), targets.detach(), 5) * targets.size(0)
+        running_top5 += top_k_accuracy(
+            outputs.detach(), targets.detach(), 5
+        ) * targets.size(0)
 
         avg_loss = total_loss / max(total_samples, 1)
         avg_top1 = running_top1 / max(total_samples, 1)
         avg_top5 = running_top5 / max(total_samples, 1)
-        progress.set_postfix(loss=f"{avg_loss:.4f}", top1=f"{avg_top1:.2f}", top5=f"{avg_top5:.2f}")
+        progress.set_postfix(
+            loss=f"{avg_loss:.4f}", top1=f"{avg_top1:.2f}", top5=f"{avg_top5:.2f}"
+        )
 
     duration = time.time() - epoch_start
     return {
@@ -254,7 +339,9 @@ def train_epoch(
 
 
 @torch.no_grad()
-def evaluate(model: nn.Module, loader, device: torch.device, precision_cfg: Dict[str, any]) -> Dict[str, float]:
+def evaluate(
+    model: nn.Module, loader, device: torch.device, precision_cfg: Dict[str, any]
+) -> Dict[str, float]:
     model.eval()
     criterion = nn.CrossEntropyLoss()
 
@@ -273,19 +360,23 @@ def evaluate(model: nn.Module, loader, device: torch.device, precision_cfg: Dict
     for images, targets in progress:
         images = images.to(device, non_blocking=True)
         targets = targets.to(device, non_blocking=True)
-        with autocast(enabled=use_amp, dtype=amp_dtype):
+        with autocast(enabled=use_amp, dtype=amp_dtype, device_type="cuda"):
             outputs = model(images)
             loss = criterion(outputs, targets)
 
         total_loss += loss.item() * targets.size(0)
         total_samples += targets.size(0)
         running_top1 += accuracy(outputs.detach(), targets.detach()) * targets.size(0)
-        running_top5 += top_k_accuracy(outputs.detach(), targets.detach(), 5) * targets.size(0)
+        running_top5 += top_k_accuracy(
+            outputs.detach(), targets.detach(), 5
+        ) * targets.size(0)
 
         avg_loss = total_loss / max(total_samples, 1)
         avg_top1 = running_top1 / max(total_samples, 1)
         avg_top5 = running_top5 / max(total_samples, 1)
-        progress.set_postfix(loss=f"{avg_loss:.4f}", top1=f"{avg_top1:.2f}", top5=f"{avg_top5:.2f}")
+        progress.set_postfix(
+            loss=f"{avg_loss:.4f}", top1=f"{avg_top1:.2f}", top5=f"{avg_top5:.2f}"
+        )
 
     duration = time.time() - start
     return {
@@ -297,23 +388,47 @@ def evaluate(model: nn.Module, loader, device: torch.device, precision_cfg: Dict
     }
 
 
-def run_dataset(config: Dict[str, any], spec: DatasetSpec, device: torch.device) -> Dict[str, float]:
+def run_dataset(
+    config: Dict[str, any], spec: DatasetSpec, device: torch.device
+) -> Dict[str, float]:
     experiment_cfg = config.get("experiment", {})
     training_cfg = config.get("training", {})
+    model_cfg = config.get("model", {})
+    logging_cfg = config.get("logging", {})
     monitor_cfg = {"grad_norm": True, "param_norm": False, "memory": False}
     monitor_cfg.update(training_cfg.get("monitor", {}))
 
     output_root = Path(experiment_cfg.get("output_dir", "./runs"))
-    run_dir = prepare_run_dirs(output_root, spec.name, experiment_cfg.get("name", ""))
+    base_label, run_slug = build_run_labels(
+        experiment_cfg, model_cfg, logging_cfg, spec.name
+    )
+    run_dir = prepare_run_dirs(output_root, spec.name, run_slug)
     setup_logging(run_dir, level=getattr(logging, config.get("log_level", "INFO")))
 
     with (run_dir / "config.json").open("w", encoding="utf-8") as handle:
         json.dump(config, handle, indent=2)
 
-    wandb_cfg = deepcopy(config.get("logging", {}))
+    wandb_cfg = deepcopy(logging_cfg)
     wandb_cfg.setdefault("config", config)
-    if not wandb_cfg.get("run_name"):
-        wandb_cfg["run_name"] = run_dir.name
+    wandb_cfg["run_name"] = run_slug
+    existing_tags = list(wandb_cfg.get("tags", []) or [])
+    additions = [spec.name]
+    model_tag = model_cfg.get("name")
+    if model_tag:
+        additions.append(str(model_tag))
+    if base_label and base_label not in additions:
+        additions.append(base_label)
+    # Preserve order while deduplicating
+    seen = set()
+    deduped_tags = []
+    for tag in [*existing_tags, *additions]:
+        if not tag:
+            continue
+        if tag in seen:
+            continue
+        seen.add(tag)
+        deduped_tags.append(tag)
+    wandb_cfg["tags"] = deduped_tags
 
     run_logger = RunLogger(run_dir, wandb_cfg)
     summary: Dict[str, float] = {}
@@ -321,7 +436,6 @@ def run_dataset(config: Dict[str, any], spec: DatasetSpec, device: torch.device)
     try:
         train_loader, val_loader, dataset_info = create_dataloaders(spec)
 
-        model_cfg = config.get("model", {})
         model_name = model_cfg.get("name", "dinov2_lora")
         model_params = deepcopy(model_cfg.get("params", {}))
         model_params.setdefault("num_classes", dataset_info.num_classes)
@@ -330,14 +444,22 @@ def run_dataset(config: Dict[str, any], spec: DatasetSpec, device: torch.device)
 
         optimizer = create_optimizer(model, training_cfg.get("optimizer", {}))
         total_steps = len(train_loader) * max(int(training_cfg.get("epochs", 1)), 1)
-        scheduler = create_scheduler(optimizer, training_cfg.get("scheduler", {}), total_steps)
+        scheduler = create_scheduler(
+            optimizer, training_cfg.get("scheduler", {}), total_steps
+        )
 
-        precision_cfg = training_cfg.get("precision", {"enabled": True, "dtype": "bf16", "grad_scaler": False})
+        precision_cfg = training_cfg.get(
+            "precision", {"enabled": True, "dtype": "bf16", "grad_scaler": False}
+        )
         precision_cfg.setdefault("grad_clip", training_cfg.get("gradient_clip_norm"))
-        grad_accum = max(1, int(training_cfg.get("grad_accumulation", training_cfg.get("grad_accum", 1))))
+        grad_accum = max(
+            1,
+            int(
+                training_cfg.get("grad_accumulation", training_cfg.get("grad_accum", 1))
+            ),
+        )
         scaler = GradScaler(
-            enabled=
-            precision_cfg.get("enabled", True)
+            enabled=precision_cfg.get("enabled", True)
             and device.type == "cuda"
             and precision_cfg.get("dtype", "bf16").lower() == "fp16"
             and precision_cfg.get("grad_scaler", True)
@@ -393,26 +515,38 @@ def run_dataset(config: Dict[str, any], spec: DatasetSpec, device: torch.device)
                             "global_step": global_step,
                             "model_state": model.state_dict(),
                             "optimizer_state": optimizer.state_dict(),
-                            "scheduler_state": scheduler.state_dict() if scheduler else None,
+                            "scheduler_state": scheduler.state_dict()
+                            if scheduler
+                            else None,
                             "metrics": combined,
                             "dataset": dataset_info.__dict__,
-                            "model": {"name": model_name, "params": model_params, "meta": model_meta},
+                            "model": {
+                                "name": model_name,
+                                "params": model_params,
+                                "meta": model_meta,
+                            },
                             "config": config,
                         },
                         best_path,
                     )
             if (epoch + 1) % save_every == 0:
-                ckpt_path = checkpoints_dir / f"epoch_{epoch+1:03d}.pt"
+                ckpt_path = checkpoints_dir / f"epoch_{epoch + 1:03d}.pt"
                 save_checkpoint(
                     {
                         "epoch": epoch,
                         "global_step": global_step,
                         "model_state": model.state_dict(),
                         "optimizer_state": optimizer.state_dict(),
-                        "scheduler_state": scheduler.state_dict() if scheduler else None,
+                        "scheduler_state": scheduler.state_dict()
+                        if scheduler
+                        else None,
                         "metrics": combined,
                         "dataset": dataset_info.__dict__,
-                        "model": {"name": model_name, "params": model_params, "meta": model_meta},
+                        "model": {
+                            "name": model_name,
+                            "params": model_params,
+                            "meta": model_meta,
+                        },
                         "config": config,
                     },
                     ckpt_path,

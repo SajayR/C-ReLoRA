@@ -101,7 +101,8 @@ Use `--override` if you want to tweak evaluation-time settings (e.g., batch size
   ```bash
   python train.py --config configs/default.yaml --datasets cifar-10 --override training.epochs=0
   ```
-- **Weights & Biases**: controlled by `logging.use_wandb`. CLI flag `--no-wandb` forces it off. Run names default to `<experiment_name>-<dataset>-<timestamp>`.
+- **Run naming**: every run is named `<dataset>_<model>_<suffix>`. The suffix comes from `experiment.name_suffix` (override it via CLI) and is omitted if blank. Example: `--override experiment.name_suffix=rank-16` yields `cifar-10_vit-base-lora_rank-16-<timestamp>` locally and `cifar-10_vit-base-lora_rank-16` in W&B. Setting `logging.run_name` still force-overrides the whole name when you need a one-off label.
+- **Weights & Biases**: controlled by `logging.use_wandb`. CLI flag `--no-wandb` forces it off. Dataset names are also injected as W&B tags so you can filter quickly.
 - **Precision**: `training.precision.dtype` supports `bf16` or `fp16`. Automatic fallback to fp32 on CPU.
 - **Gradient accumulation**: `training.grad_accumulation` – the script handles scaling and logging per accumulated step.
 - **Monitoring toggles**: flip `training.monitor.grad_norm`, `param_norm`, `memory` to inject extra metrics into logs.

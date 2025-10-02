@@ -11,9 +11,11 @@ from torch.utils.data import DataLoader
 from torchvision import transforms
 from torchvision.datasets import ImageFolder
 
-NORMALIZATION_PRESETS: Dict[str, Tuple[Tuple[float, float, float], Tuple[float, float, float]]] = {
-    "imagenet": ((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
-    "dinov2": ((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+NORMALIZATION_PRESETS: Dict[
+    str, Tuple[Tuple[float, float, float], Tuple[float, float, float]]
+] = {
+    "dinov2": ((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
+    "vit": ((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
     "cifar10": ((0.4914, 0.4822, 0.4465), (0.2470, 0.2435, 0.2616)),
     "cifar100": ((0.5071, 0.4865, 0.4409), (0.2673, 0.2564, 0.2761)),
     "tiny-imagenet": ((0.480, 0.448, 0.398), (0.277, 0.269, 0.282)),
@@ -48,7 +50,9 @@ class DatasetInfo:
     root: Path
 
 
-def _resolve_normalization(spec: DatasetSpec) -> Tuple[Tuple[float, float, float], Tuple[float, float, float]]:
+def _resolve_normalization(
+    spec: DatasetSpec,
+) -> Tuple[Tuple[float, float, float], Tuple[float, float, float]]:
     norm = spec.normalization
     if isinstance(norm, str):
         key = norm.lower()
@@ -94,7 +98,9 @@ def _transforms(spec: DatasetSpec):
     return train_tf, eval_tf
 
 
-def _resolve_split(dataset_dir: Path, preferred: Optional[str], fallbacks: Tuple[str, ...]) -> str:
+def _resolve_split(
+    dataset_dir: Path, preferred: Optional[str], fallbacks: Tuple[str, ...]
+) -> str:
     if preferred:
         path = dataset_dir / preferred
         if path.is_dir():
@@ -112,7 +118,9 @@ def create_dataloaders(spec: DatasetSpec) -> Tuple[DataLoader, DataLoader, Datas
         raise FileNotFoundError(f"Dataset directory not found: {dataset_dir}")
 
     train_split = _resolve_split(dataset_dir, spec.train_split, ("train", "training"))
-    val_split = _resolve_split(dataset_dir, spec.val_split, ("val", "validation", "test"))
+    val_split = _resolve_split(
+        dataset_dir, spec.val_split, ("val", "validation", "test")
+    )
 
     train_tf, val_tf = _transforms(spec)
 

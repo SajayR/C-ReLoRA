@@ -1,28 +1,30 @@
 experiment:
-  name: dinov2-baseline
-  name_suffix: null
+  name: vit-base-lora-16
+  name_suffix: rank-16
   seed: 42
   device: auto
   output_dir: ./runs
 
 model:
-  name: dinov2_lora
+  name: vit_base_lora
   params:
-    model_name: facebook/dinov2-small
+    model_name: google/vit-base-patch16-224
     dropout: 0.1
     freeze_backbone: false
+    gradient_checkpointing: false
     lora:
       enabled: true
       r: 16
       alpha: 32
       dropout: 0.1
-      target_modules: ["query", "key", "value", "dense"]
+      target_modules:
+        ["query", "key", "value", "output.dense", "intermediate.dense"]
 
 training:
   epochs: 5
   gradient_clip_norm: 1.0
   grad_accumulation: 1
-  log_every: 20
+  log_every: 1
   eval_every: 1
   save_every: 1
   precision:
@@ -37,7 +39,7 @@ training:
     eps: 0.00000001
   scheduler:
     type: cosine
-    warmup: 0.05
+    warmup: 0.1
     min_lr_mult: 0.1
   monitor:
     grad_norm: true
@@ -61,13 +63,16 @@ logging:
   entity: null
   run_name: null
   group: null
-  tags: ["dinov2", "baseline"]
+  tags: ["vit", "lora", "16"]
   notes: null
 
 datasets:
   - name: cifar-10
     val_split: test
-    normalization: cifar10
+    normalization: vit
   - name: flowers-102
     val_split: test
-    batch_size: 64
+    normalization: vit
+  - name: cifar-100
+    val_split: test
+    normalization: vit

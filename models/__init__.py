@@ -39,4 +39,13 @@ def _build_dinov2(params: Dict[str, Any], dataset: DatasetInfo):
     return model, extras
 
 
+@register("vit_base_lora")
+def _build_vit_base(params: Dict[str, Any], dataset: DatasetInfo):
+    from .vit_base_lora import build_model
+
+    model_name = params.get("model_name", "google/vit-base-patch16-224-in21k")
+    model, extras = build_model(model_name, dataset.num_classes, params)
+    return model, extras
+
+
 __all__ = ["create", "register"]
