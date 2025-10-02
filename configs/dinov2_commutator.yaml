@@ -28,7 +28,7 @@ training:
   epochs: 4
   gradient_clip_norm: 0.0
   grad_accumulation: 1
-  log_every: 20
+  log_every: 1
   eval_every: 1
   save_every: 1
   precision:

@@ -380,9 +380,9 @@ def evaluate(
 
     duration = time.time() - start
     return {
-        "val/loss": total_loss / max(total_samples, 1),
-        "val/accuracy": running_top1 / max(total_samples, 1),
-        "val/top5": running_top5 / max(total_samples, 1),
+        "charts/val_loss": total_loss / max(total_samples, 1),
+        "charts/val_accuracy": running_top1 / max(total_samples, 1),
+        "charts/val_top5_accuracy": running_top5 / max(total_samples, 1),
         "val/duration": duration,
         "val/throughput": total_samples / max(duration, 1e-9),
     }
