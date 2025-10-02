@@ -1,30 +1,34 @@
 experiment:
-  name: vit-base-lora-16
-  name_suffix: rank-16
+  name: dinov2-commutator-16
+  name_suffix: rank-16-noskew-gainenabled-skew
   seed: 42
   device: auto
   output_dir: ./runs
 
 model:
-  name: vit_base_lora
+  name: dinov2_commutator
   params:
-    model_name: google/vit-base-patch16-224
+    model_name: facebook/dinov2-small
     dropout: 0.1
-    freeze_backbone: false
-    gradient_checkpointing: false
-    lora:
+    freeze_backbone: true
+    commutator:
       enabled: true
       r: 16
       alpha: 32
-      dropout: 0.1
-      target_modules:
-        ["query", "key", "value", "output.dense", "intermediate.dense"]
+      dropout: 0.0
+      skew: true
+      target_modules: ["query", "key", "value", "dense"]
+      init_std_scale: 1.0
+      gain:
+        enabled: true
+        mode: per_out
+        n_heads: null
 
 training:
-  epochs: 5
-  gradient_clip_norm: 1.0
+  epochs: 4
+  gradient_clip_norm: 0.0
   grad_accumulation: 1
-  log_every: 1
+  log_every: 20
   eval_every: 1
   save_every: 1
   precision:
@@ -34,7 +38,7 @@ training:
   optimizer:
     type: adamw
     lr: 0.0003
-    weight_decay: 0.05
+    weight_decay: 0.01
     betas: [0.9, 0.999]
     eps: 0.00000001
   scheduler:
@@ -44,32 +48,35 @@ training:
   monitor:
     grad_norm: true
     param_norm: true
-    memory: true
+    memory: false
 
 data:
   root: /speedy/datasets
   image_size: 224
-  batch_size: 128
+  batch_size: 256
   num_workers: 8
   pin_memory: true
   persistent_workers: true
-  normalization: imagenet
+  normalization: dinov2
   augment: true
   drop_last: true
 
 logging:
   use_wandb: true
-  project: cis-testbed
+  project: fisher-lora
   entity: null
   run_name: null
   group: null
-  tags: ["vit", "lora", "16"]
+  tags: ["dinov2", "commutator", "16"]
   notes: null
 
 datasets:
-  - name: cifar-100
-    val_split: test
-    normalization: vit
   - name: ImageNet
     val_split: test
-    normalization: vit
+    normalization: dinov2
+  - name: cifar-10
+    val_split: test
+    normalization: dinov2
+  - name: cifar-100
+    val_split: test
+    normalization: dinov2

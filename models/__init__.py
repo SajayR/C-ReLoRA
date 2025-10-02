@@ -7,6 +7,7 @@ from typing import Any, Dict, Tuple
 import torch.nn as nn
 
 from data import DatasetInfo
+from .commutator_lora import CommutatorLoRA
 
 _MODEL_BUILDERS: Dict[str, callable] = {}
 
@@ -39,6 +40,15 @@ def _build_dinov2(params: Dict[str, Any], dataset: DatasetInfo):
     return model, extras
 
 
+@register("dinov2_commutator")
+def _build_dinov2_commutator(params: Dict[str, Any], dataset: DatasetInfo):
+    from .dinov2_commutator import build_model
+
+    model_name = params.get("model_name", "facebook/dinov2-small")
+    model, extras = build_model(model_name, dataset.num_classes, params)
+    return model, extras
+
+
 @register("vit_base_lora")
 def _build_vit_base(params: Dict[str, Any], dataset: DatasetInfo):
     from .vit_base_lora import build_model
@@ -48,4 +58,13 @@ def _build_vit_base(params: Dict[str, Any], dataset: DatasetInfo):
     return model, extras
 
 
-__all__ = ["create", "register"]
+@register("vit_base_commutator")
+def _build_vit_base_commutator(params: Dict[str, Any], dataset: DatasetInfo):
+    from .vit_base_commutator import build_model
+
+    model_name = params.get("model_name", "google/vit-base-patch16-224-in21k")
+    model, extras = build_model(model_name, dataset.num_classes, params)
+    return model, extras
+
+
+__all__ = ["create", "register", "CommutatorLoRA"]

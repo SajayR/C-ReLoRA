@@ -299,7 +299,7 @@ def train_epoch(
             global_step += 1
 
             metrics = {
-                "train/loss_step": float(loss.item() * grad_accum),
+                "train/loss": float(loss.item() * grad_accum),
                 "train/lr": optimizer.param_groups[0]["lr"],
             }
             if monitor_cfg.get("grad_norm", True) and gn is not None:
@@ -470,7 +470,7 @@ def run_dataset(
         global_step = 0
 
         epochs = int(training_cfg.get("epochs", 1))
-        log_every = int(training_cfg.get("log_every", 10))
+        log_every = int(training_cfg.get("log_every", 1))
         eval_every = int(training_cfg.get("eval_every", 1))
         save_every = int(training_cfg.get("save_every", 1))
 
