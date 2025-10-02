@@ -1,208 +1,133 @@
-"""
-Training utilities for DinoV2 LoRA fine-tuning.
-"""
+"""Lightweight training helpers."""
 
-import os
+from __future__ import annotations
+
 import logging
+import math
 import random
+from pathlib import Path
+from typing import Any, Dict, Optional
+
 import numpy as np
 import torch
-import torch.optim as optim
-from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, ConstantLR
-from typing import Dict, Any, Optional
-from pathlib import Path
+from torch.optim import Adam, AdamW, SGD
+from torch.optim.lr_scheduler import LambdaLR
 
-logger = logging.getLogger(__name__)
+LOGGER = logging.getLogger(__name__)
 
 
-def setup_logging(log_dir: str, level: int = logging.INFO):
-    """Setup logging configuration."""
-    log_dir = Path(log_dir)
-    log_dir.mkdir(parents=True, exist_ok=True)
-    
+def setup_logging(output_dir: Path, level: int = logging.INFO) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    handlers = [logging.StreamHandler()]
+    log_file = output_dir / "train.log"
+    handlers.append(logging.FileHandler(log_file))
     logging.basicConfig(
         level=level,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.FileHandler(log_dir / 'training.log'),
-            logging.StreamHandler()
-        ]
+        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+        handlers=handlers,
+        force=True,
     )
 
 
-def set_seed(seed: int):
-    """Set random seed for reproducibility."""
+def set_seed(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
-    logger.info(f"Set random seed to {seed}")
+    torch.backends.cudnn.deterministic = False
+    torch.backends.cudnn.benchmark = True
+    LOGGER.info("Seed set to %d", seed)
 
 
-def create_optimizer(model: torch.nn.Module, config) -> torch.optim.Optimizer:
-    """Create optimizer based on config."""
-    # Get trainable parameters
-    trainable_params = [p for p in model.parameters() if p.requires_grad]
-    
-    if config.optimizer.type.lower() == "adamw":
-        optimizer = optim.AdamW(
-            trainable_params,
-            lr=config.training.learning_rate,
-            weight_decay=config.training.weight_decay,
-            betas=config.optimizer.betas,
-            eps=config.optimizer.eps
-        )
-    elif config.optimizer.type.lower() == "adam":
-        optimizer = optim.Adam(
-            trainable_params,
-            lr=config.training.learning_rate,
-            weight_decay=config.training.weight_decay,
-            betas=config.optimizer.betas,
-            eps=config.optimizer.eps
-        )
-    elif config.optimizer.type.lower() == "sgd":
-        optimizer = optim.SGD(
-            trainable_params,
-            lr=config.training.learning_rate,
-            weight_decay=config.training.weight_decay,
-            momentum=0.9
-        )
+def create_optimizer(model: torch.nn.Module, cfg: Dict[str, Any]) -> torch.optim.Optimizer:
+    params = [p for p in model.parameters() if p.requires_grad]
+    name = cfg.get("type", "adamw").lower()
+    lr = float(cfg.get("lr", cfg.get("learning_rate", 3e-4)))
+    weight_decay = float(cfg.get("weight_decay", 0.0))
+
+    if name == "adamw":
+        betas = tuple(cfg.get("betas", (0.9, 0.999)))
+        eps = float(cfg.get("eps", 1e-8))
+        optimizer = AdamW(params, lr=lr, weight_decay=weight_decay, betas=betas, eps=eps)
+    elif name == "adam":
+        betas = tuple(cfg.get("betas", (0.9, 0.999)))
+        eps = float(cfg.get("eps", 1e-8))
+        optimizer = Adam(params, lr=lr, weight_decay=weight_decay, betas=betas, eps=eps)
+    elif name == "sgd":
+        momentum = float(cfg.get("momentum", 0.9))
+        optimizer = SGD(params, lr=lr, weight_decay=weight_decay, momentum=momentum)
     else:
-        raise ValueError(f"Unsupported optimizer type: {config.optimizer.type}")
-    
-    logger.info(f"Created {config.optimizer.type} optimizer with LR {config.training.learning_rate}")
+        raise ValueError(f"Unsupported optimizer: {name}")
+
+    LOGGER.info("Optimizer: %s lr=%.2e weight_decay=%.2e params=%d", name, lr, weight_decay, sum(p.numel() for p in params))
     return optimizer
 
 
-def create_scheduler(
-    optimizer: torch.optim.Optimizer, 
-    config,
-    total_steps: int
-) -> Optional[torch.optim.lr_scheduler._LRScheduler]:
-    """Create learning rate scheduler based on config."""
-    if config.scheduler.type.lower() == "cosine":
-        warmup_steps = int(total_steps * config.scheduler.warmup_ratio)
-        main_steps = total_steps - warmup_steps
-        
-        if warmup_steps > 0:
-            # Create warmup scheduler
-            warmup_scheduler = LinearLR(
-                optimizer,
-                start_factor=0.1,
-                end_factor=1.0,
-                total_iters=warmup_steps
-            )
-            
-            # Create cosine scheduler
-            cosine_scheduler = CosineAnnealingLR(
-                optimizer,
-                T_max=main_steps,
-                eta_min=config.training.learning_rate * 0.01
-            )
-            
-            # Combine schedulers (simplified - in practice you'd use SequentialLR)
-            scheduler = cosine_scheduler
-        else:
-            scheduler = CosineAnnealingLR(
-                optimizer,
-                T_max=total_steps,
-                eta_min=config.training.learning_rate * 0.01
-            )
-            
-    elif config.scheduler.type.lower() == "linear":
-        warmup_steps = int(total_steps * config.scheduler.warmup_ratio)
-        scheduler = LinearLR(
-            optimizer,
-            start_factor=0.1 if warmup_steps > 0 else 1.0,
-            end_factor=0.1,
-            total_iters=total_steps
-        )
-        
-    elif config.scheduler.type.lower() == "constant":
-        scheduler = ConstantLR(optimizer, factor=1.0, total_iters=total_steps)
-        
-    else:
-        logger.warning(f"Unknown scheduler type: {config.scheduler.type}, using no scheduler")
+def create_scheduler(optimizer: torch.optim.Optimizer, cfg: Dict[str, Any], total_steps: int) -> Optional[LambdaLR]:
+    name = (cfg or {}).get("type", "cosine").lower()
+    if name in {"none", "constant"} or total_steps <= 0:
         return None
-    
-    logger.info(f"Created {config.scheduler.type} scheduler")
+
+    warmup_fraction = float(cfg.get("warmup", cfg.get("warmup_epochs", 0.0)))
+    if warmup_fraction < 1.0:
+        warmup_steps = int(total_steps * warmup_fraction)
+    else:
+        warmup_steps = int(warmup_fraction)
+
+    min_lr_mult = float(cfg.get("min_lr_mult", cfg.get("min_lr_ratio", 0.01)))
+
+    def lr_lambda(step: int) -> float:
+        if warmup_steps and step < warmup_steps:
+            return max(step / float(warmup_steps), 1e-6)
+        progress = (step - warmup_steps) / float(max(1, total_steps - warmup_steps))
+        progress = min(max(progress, 0.0), 1.0)
+        if name == "linear":
+            return (1.0 - progress) * (1.0 - min_lr_mult) + min_lr_mult
+        return min_lr_mult + 0.5 * (1.0 - min_lr_mult) * (1.0 + math.cos(progress * math.pi))
+
+    scheduler = LambdaLR(optimizer, lr_lambda=lr_lambda)
+    LOGGER.info("Scheduler: %s warmup=%d steps total=%d", name, warmup_steps, total_steps)
     return scheduler
 
 
-def save_checkpoint(
-    model: torch.nn.Module,
-    optimizer: torch.optim.Optimizer,
-    scheduler: Optional[torch.optim.lr_scheduler._LRScheduler],
-    epoch: int,
-    step: int,
-    metrics: Dict[str, float],
-    config: Dict[str, Any],
-    save_path: str
-):
-    """Save training checkpoint."""
-    checkpoint = {
-        'epoch': epoch,
-        'step': step,
-        'model_state_dict': model.state_dict(),
-        'optimizer_state_dict': optimizer.state_dict(),
-        'scheduler_state_dict': scheduler.state_dict() if scheduler else None,
-        'metrics': metrics,
-        'config': config
-    }
-    
-    torch.save(checkpoint, save_path)
-    logger.info(f"Saved checkpoint to {save_path}")
+def save_checkpoint(state: Dict[str, Any], path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(state, path)
+    LOGGER.info("Saved checkpoint to %s", path)
 
 
-def load_checkpoint(
-    model: torch.nn.Module,
-    optimizer: torch.optim.Optimizer,
-    scheduler: Optional[torch.optim.lr_scheduler._LRScheduler],
-    checkpoint_path: str
-) -> Dict[str, Any]:
-    """Load training checkpoint."""
-    checkpoint = torch.load(checkpoint_path, map_location='cpu')
-    
-    model.load_state_dict(checkpoint['model_state_dict'])
-    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-    
-    if scheduler and checkpoint.get('scheduler_state_dict'):
-        scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-    
-    logger.info(f"Loaded checkpoint from {checkpoint_path}")
-    logger.info(f"Resuming from epoch {checkpoint['epoch']}, step {checkpoint['step']}")
-    
+def load_checkpoint(path: Path, map_location: str | torch.device = "cpu") -> Dict[str, Any]:
+    checkpoint = torch.load(path, map_location=map_location)
+    LOGGER.info("Loaded checkpoint from %s", path)
     return checkpoint
 
 
-def count_parameters(model: torch.nn.Module) -> Dict[str, int]:
-    """Count model parameters."""
-    total_params = sum(p.numel() for p in model.parameters())
-    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    frozen_params = total_params - trainable_params
-    
-    return {
-        'total': total_params,
-        'trainable': trainable_params,
-        'frozen': frozen_params,
-        'trainable_percent': 100.0 * trainable_params / total_params if total_params > 0 else 0
-    }
+def grad_norm(parameters, norm_type: float = 2.0) -> float:
+    norms = []
+    for p in parameters:
+        if p.grad is not None:
+            norms.append(p.grad.detach().data.norm(norm_type))
+    if not norms:
+        return 0.0
+    total = torch.norm(torch.stack(norms), norm_type)
+    return float(total.item())
 
 
-def get_gpu_memory_info() -> Dict[str, float]:
-    """Get GPU memory information."""
-    if not torch.cuda.is_available():
-        return {}
-    
-    allocated = torch.cuda.memory_allocated() / 1e9  # GB
-    reserved = torch.cuda.memory_reserved() / 1e9    # GB
-    total = torch.cuda.get_device_properties(0).total_memory / 1e9  # GB
-    
-    return {
-        'allocated_gb': allocated,
-        'reserved_gb': reserved,
-        'total_gb': total,
-        'free_gb': total - reserved
-    }
+def param_norm(parameters, norm_type: float = 2.0) -> float:
+    values = [p.detach().data.norm(norm_type) for p in parameters if p.requires_grad]
+    if not values:
+        return 0.0
+    total = torch.norm(torch.stack(values), norm_type)
+    return float(total.item())
+
+
+__all__ = [
+    "setup_logging",
+    "set_seed",
+    "create_optimizer",
+    "create_scheduler",
+    "save_checkpoint",
+    "load_checkpoint",
+    "grad_norm",
+    "param_norm",
+]
