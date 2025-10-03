@@ -26,9 +26,7 @@ relora:
     - "value"
     - "dense"
   prune_b_state: true
-  warm_start_steps: 0
   merge_frequency: 500
-  adapter_warmup_steps: 50
   adapter_learning_rate: 0.001
   adapter_weight_decay: 0.0
 

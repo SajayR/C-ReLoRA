@@ -132,10 +132,6 @@ class ConfigManager:
                 raise ValueError("ReLoRA alpha must be positive")
             if relora_cfg.merge_frequency <= 0:
                 raise ValueError("ReLoRA merge_frequency must be positive")
-            if relora_cfg.warm_start_steps < 0:
-                raise ValueError("ReLoRA warm_start_steps must be non-negative")
-            if relora_cfg.adapter_warmup_steps < 0:
-                raise ValueError("ReLoRA adapter_warmup_steps must be non-negative")
             if relora_cfg.adapter_learning_rate <= 0:
                 raise ValueError("ReLoRA adapter_learning_rate must be positive")
             if relora_cfg.adapter_weight_decay < 0:
