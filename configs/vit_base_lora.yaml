@@ -1,6 +1,6 @@
 experiment:
-  name: vit-base-lora-16
-  name_suffix: rank-16
+  name: vit-base-lora-4
+  name_suffix: rank-4
   seed: 42
   device: auto
   output_dir: ./runs
@@ -14,9 +14,9 @@ model:
     gradient_checkpointing: false
     lora:
       enabled: true
-      r: 16
-      alpha: 32
-      dropout: 0.1
+      r: 4
+      alpha: 8
+      dropout: 0.0
       target_modules:
         ["query", "key", "value", "output.dense", "intermediate.dense"]
 
@@ -53,7 +53,7 @@ data:
   num_workers: 8
   pin_memory: true
   persistent_workers: true
-  normalization: imagenet
+  normalization: vit
   augment: true
   drop_last: true
 
@@ -63,13 +63,13 @@ logging:
   entity: null
   run_name: null
   group: null
-  tags: ["vit", "lora", "16"]
+  tags: ["vit", "lora", "4"]
   notes: null
 
 datasets:
   - name: cifar-100
     val_split: test
     normalization: vit
-  - name: ImageNet
+  - name: cifar-10
     val_split: test
     normalization: vit
