@@ -8,6 +8,7 @@ import torch.nn as nn
 
 from data import DatasetInfo
 from .commutator_lora import CommutatorLoRA
+from .bracket_adapter import BracketAdapter
 
 _MODEL_BUILDERS: Dict[str, callable] = {}
 
@@ -49,6 +50,15 @@ def _build_dinov2_commutator(params: Dict[str, Any], dataset: DatasetInfo):
     return model, extras
 
 
+@register("dinov2_bisided")
+def _build_dinov2_bisided(params: Dict[str, Any], dataset: DatasetInfo):
+    from .dinov2_bracket import build_model
+
+    model_name = params.get("model_name", "facebook/dinov2-small")
+    model, extras = build_model(model_name, dataset.num_classes, params)
+    return model, extras
+
+
 @register("vit_base_lora")
 def _build_vit_base(params: Dict[str, Any], dataset: DatasetInfo):
     from .vit_base_lora import build_model
@@ -67,4 +77,4 @@ def _build_vit_base_commutator(params: Dict[str, Any], dataset: DatasetInfo):
     return model, extras
 
 
-__all__ = ["create", "register", "CommutatorLoRA"]
+__all__ = ["create", "register", "CommutatorLoRA", "BracketAdapter"]
