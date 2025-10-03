@@ -27,11 +27,11 @@ def setup_logging(log_dir: str, level: int = logging.INFO):
 
     logging.basicConfig(
         level=level,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         handlers=[
-            logging.FileHandler(log_dir / 'training.log'),
-            logging.StreamHandler()
-        ]
+            logging.FileHandler(log_dir / "training.log"),
+            logging.StreamHandler(),
+        ],
     )
 
 
@@ -57,7 +57,7 @@ def create_optimizer(model: torch.nn.Module, config) -> torch.optim.Optimizer:
             lr=config.training.learning_rate,
             weight_decay=config.training.weight_decay,
             betas=config.optimizer.betas,
-            eps=config.optimizer.eps
+            eps=config.optimizer.eps,
         )
     elif config.optimizer.type.lower() == "adam":
         optimizer = optim.Adam(
@@ -65,26 +65,26 @@ def create_optimizer(model: torch.nn.Module, config) -> torch.optim.Optimizer:
             lr=config.training.learning_rate,
             weight_decay=config.training.weight_decay,
             betas=config.optimizer.betas,
-            eps=config.optimizer.eps
+            eps=config.optimizer.eps,
         )
     elif config.optimizer.type.lower() == "sgd":
         optimizer = optim.SGD(
             trainable_params,
             lr=config.training.learning_rate,
             weight_decay=config.training.weight_decay,
-            momentum=0.9
+            momentum=0.9,
         )
     else:
         raise ValueError(f"Unsupported optimizer type: {config.optimizer.type}")
 
-    logger.info(f"Created {config.optimizer.type} optimizer with LR {config.training.learning_rate}")
+    logger.info(
+        f"Created {config.optimizer.type} optimizer with LR {config.training.learning_rate}"
+    )
     return optimizer
 
 
 def create_scheduler(
-    optimizer: torch.optim.Optimizer,
-    config,
-    total_steps: int
+    optimizer: torch.optim.Optimizer, config, total_steps: int
 ) -> Optional[torch.optim.lr_scheduler._LRScheduler]:
     """Create learning rate scheduler based on config."""
     if config.scheduler.type.lower() == "cosine":
@@ -93,7 +93,7 @@ def create_scheduler(
 
         if warmup_steps > 0:
             warmup_scheduler = LinearLR(
-                            optimizer, start_factor=0.1, end_factor=1.0, total_iters=warmup_steps
+                optimizer, start_factor=0.1, end_factor=1.0, total_iters=warmup_steps
             )
 
             # Create cosine scheduler
@@ -108,11 +108,11 @@ def create_scheduler(
                 schedulers=[warmup_scheduler, cosine_scheduler],
                 milestones=[warmup_steps],
             )
-else:
+        else:
             scheduler = CosineAnnealingLR(
                 optimizer,
                 T_max=total_steps,
-                eta_min=config.training.learning_rate * 0.01
+                eta_min=config.training.learning_rate * 0.01,
             )
 
     elif config.scheduler.type.lower() == "linear":
@@ -121,14 +121,16 @@ else:
             optimizer,
             start_factor=0.1 if warmup_steps > 0 else 1.0,
             end_factor=0.1,
-            total_iters=total_steps
+            total_iters=total_steps,
         )
 
     elif config.scheduler.type.lower() == "constant":
         scheduler = ConstantLR(optimizer, factor=1.0, total_iters=total_steps)
 
     else:
-        logger.warning(f"Unknown scheduler type: {config.scheduler.type}, using no scheduler")
+        logger.warning(
+            f"Unknown scheduler type: {config.scheduler.type}, using no scheduler"
+        )
         return None
 
     logger.info(f"Created {config.scheduler.type} scheduler")
@@ -143,17 +145,17 @@ def save_checkpoint(
     step: int,
     metrics: Dict[str, float],
     config: Dict[str, Any],
-    save_path: str
+    save_path: str,
 ):
     """Save training checkpoint."""
     checkpoint = {
-        'epoch': epoch,
-        'step': step,
-        'model_state_dict': model.state_dict(),
-        'optimizer_state_dict': optimizer.state_dict(),
-        'scheduler_state_dict': scheduler.state_dict() if scheduler else None,
-        'metrics': metrics,
-        'config': config
+        "epoch": epoch,
+        "step": step,
+        "model_state_dict": model.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "scheduler_state_dict": scheduler.state_dict() if scheduler else None,
+        "metrics": metrics,
+        "config": config,
     }
 
     torch.save(checkpoint, save_path)
@@ -164,16 +166,16 @@ def load_checkpoint(
     model: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
     scheduler: Optional[torch.optim.lr_scheduler._LRScheduler],
-    checkpoint_path: str
+    checkpoint_path: str,
 ) -> Dict[str, Any]:
     """Load training checkpoint."""
-    checkpoint = torch.load(checkpoint_path, map_location='cpu')
+    checkpoint = torch.load(checkpoint_path, map_location="cpu")
 
-    model.load_state_dict(checkpoint['model_state_dict'])
-    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    model.load_state_dict(checkpoint["model_state_dict"])
+    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
 
-    if scheduler and checkpoint.get('scheduler_state_dict'):
-        scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+    if scheduler and checkpoint.get("scheduler_state_dict"):
+        scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
 
     logger.info(f"Loaded checkpoint from {checkpoint_path}")
     logger.info(f"Resuming from epoch {checkpoint['epoch']}, step {checkpoint['step']}")
@@ -188,10 +190,12 @@ def count_parameters(model: torch.nn.Module) -> Dict[str, int]:
     frozen_params = total_params - trainable_params
 
     return {
-        'total': total_params,
-        'trainable': trainable_params,
-        'frozen': frozen_params,
-        'trainable_percent': 100.0 * trainable_params / total_params if total_params > 0 else 0
+        "total": total_params,
+        "trainable": trainable_params,
+        "frozen": frozen_params,
+        "trainable_percent": 100.0 * trainable_params / total_params
+        if total_params > 0
+        else 0,
     }
 
 
@@ -201,12 +205,12 @@ def get_gpu_memory_info() -> Dict[str, float]:
         return {}
 
     allocated = torch.cuda.memory_allocated() / 1e9  # GB
-    reserved = torch.cuda.memory_reserved() / 1e9    # GB
+    reserved = torch.cuda.memory_reserved() / 1e9  # GB
     total = torch.cuda.get_device_properties(0).total_memory / 1e9  # GB
 
     return {
-        'allocated_gb': allocated,
-        'reserved_gb': reserved,
-        'total_gb': total,
-        'free_gb': total - reserved
+        "allocated_gb": allocated,
+        "reserved_gb": reserved,
+        "total_gb": total,
+        "free_gb": total - reserved,
     }

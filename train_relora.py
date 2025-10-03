@@ -19,8 +19,10 @@ import wandb
 from configs.config_manager import ConfigManager, ExperimentConfig
 from data.imagenet_dataset import create_imagenet_dataloaders
 from models.dinov2_relora import (
+    CycleBasisManager,
     DinoV2ReLoRAClassifier,
     ReLoRAConfig,
+    assign_relora_cycle_bases,
     collect_adapter_parameters,
     merge_relora_layers,
     prune_relora_optimizer_states,
@@ -108,6 +110,7 @@ class DinoV2ReLoRATrainer:
         self.relora_active = False
         self.adapter_group_indices: List[int] = []
         self.adapter_warmup: Optional[AdapterWarmupController] = None
+        self.relora_cycle_index = 0
 
         self._setup_logging()
 
@@ -152,11 +155,15 @@ class DinoV2ReLoRATrainer:
 
     def setup_model(self) -> None:
         logger.info("Initializing model...")
-        self.model = DinoV2ReLoRAClassifier(
-            model_name=self.config.model.name,
-            num_classes=self.config.model.num_classes,
-            dropout=self.config.model.dropout,
-        ).to(self.device)
+        self.model = (
+            DinoV2ReLoRAClassifier(
+                model_name=self.config.model.name,
+                num_classes=self.config.model.num_classes,
+                dropout=self.config.model.dropout,
+            )
+            .to(self.device)
+            .requires_grad(False)
+        )
 
         self.optimizer = create_optimizer(self.model, self.config)
         adapter_lr = self.config.relora.adapter_learning_rate
@@ -209,11 +216,15 @@ class DinoV2ReLoRATrainer:
             self.adapter_group_indices,
             self.config.relora.adapter_warmup_steps,
         )
-        target_lrs = [self.optimizer.param_groups[idx]["lr"] for idx in self.adapter_group_indices]
+        target_lrs = [
+            self.optimizer.param_groups[idx]["lr"] for idx in self.adapter_group_indices
+        ]
         self.adapter_warmup.start(target_lrs)
 
         self.relora_active = True
         self.relora_step = 0
+        self.relora_cycle_index = 0
+        self._resample_relora_bases()
 
     def _get_autocast_dtype(self) -> Optional[torch.dtype]:
         if not self.config.mixed_precision.enabled:
@@ -223,7 +234,9 @@ class DinoV2ReLoRATrainer:
             return torch.bfloat16
         if dtype_str in {"fp16", "float16", "half"}:
             return torch.float16
-        logger.warning(f"Unknown mixed precision dtype '{self.config.mixed_precision.dtype}', disabling")
+        logger.warning(
+            f"Unknown mixed precision dtype '{self.config.mixed_precision.dtype}', disabling"
+        )
         return None
 
     def _should_use_grad_scaler(self, autocast_dtype: Optional[torch.dtype]) -> bool:
@@ -286,9 +299,14 @@ class DinoV2ReLoRATrainer:
             if self.scheduler is not None:
                 self.scheduler.step()
 
-            if self.relora_active and self.adapter_group_indices and self.adapter_warmup:
+            if (
+                self.relora_active
+                and self.adapter_group_indices
+                and self.adapter_warmup
+            ):
                 target_lrs = [
-                    self.optimizer.param_groups[idx]["lr"] for idx in self.adapter_group_indices
+                    self.optimizer.param_groups[idx]["lr"]
+                    for idx in self.adapter_group_indices
                 ]
                 self.adapter_warmup.step(target_lrs)
 
@@ -307,6 +325,8 @@ class DinoV2ReLoRATrainer:
                     logger.info(
                         f"Merged and reinitialized {merged} ReLoRA layers at step {self.global_step}"
                     )
+                    self.relora_cycle_index += 1
+                    self._resample_relora_bases()
                     if self.adapter_group_indices and self.adapter_warmup:
                         target_lrs = [
                             self.optimizer.param_groups[idx]["lr"]
@@ -317,7 +337,9 @@ class DinoV2ReLoRATrainer:
             avg_loss = total_loss / max(1, total_samples)
             acc = 100.0 * total_correct / max(1, total_samples)
             lr = self.optimizer.param_groups[0]["lr"]
-            progress_bar.set_postfix({"loss": f"{avg_loss:.4f}", "acc": f"{acc:.2f}%", "lr": lr})
+            progress_bar.set_postfix(
+                {"loss": f"{avg_loss:.4f}", "acc": f"{acc:.2f}%", "lr": lr}
+            )
 
             if self.global_step % self.config.training.logging_steps == 0:
                 self._log_metrics(
@@ -370,10 +392,12 @@ class DinoV2ReLoRATrainer:
             _, top5 = outputs.topk(5, dim=1)
             top5_correct += top5.eq(targets.unsqueeze(1)).sum().item()
 
-            progress_bar.set_postfix({
-                "loss": f"{loss.item():.4f}",
-                "acc": f"{100.0 * total_correct / max(1, total_samples):.2f}%",
-            })
+            progress_bar.set_postfix(
+                {
+                    "loss": f"{loss.item():.4f}",
+                    "acc": f"{100.0 * total_correct / max(1, total_samples):.2f}%",
+                }
+            )
 
         return {
             "val_loss": total_loss / max(1, total_samples),
@@ -381,11 +405,26 @@ class DinoV2ReLoRATrainer:
             "val_top5_accuracy": 100.0 * top5_correct / max(1, total_samples),
         }
 
+    def _resample_relora_bases(self) -> None:
+        if not self.relora_active:
+            return
+        assert self.model is not None
+        seed = int(getattr(self.config, "seed", 0))
+        manager = CycleBasisManager(seed, self.relora_cycle_index, self.device)
+        assigned = assign_relora_cycle_bases(self.model.backbone, manager)
+        logger.info(
+            "Assigned orthonormal bases to %d ReLoRA layers for cycle %d",
+            assigned,
+            self.relora_cycle_index,
+        )
+
     def _log_metrics(self, metrics: Dict[str, Any]) -> None:
         if self.config.logging.use_wandb:
             wandb.log(metrics, step=self.global_step)
 
-    def _save_checkpoint(self, metrics: Dict[str, float], is_best: bool = False) -> None:
+    def _save_checkpoint(
+        self, metrics: Dict[str, float], is_best: bool = False
+    ) -> None:
         assert self.model is not None and self.optimizer is not None
         save_path = self.checkpoint_dir / f"checkpoint_epoch_{self.current_epoch}.pt"
         save_checkpoint(
@@ -450,7 +489,9 @@ class DinoV2ReLoRATrainer:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train DinoV2 with ReLoRA")
     parser.add_argument("--config", type=str, default="relora", help="Config name")
-    parser.add_argument("--experiment-name", type=str, default=None, help="Experiment name")
+    parser.add_argument(
+        "--experiment-name", type=str, default=None, help="Experiment name"
+    )
     parser.add_argument("--override", nargs="+", help="Config overrides (key=value)")
     args = parser.parse_args()
 
