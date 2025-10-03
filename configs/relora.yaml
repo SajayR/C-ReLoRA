@@ -56,7 +56,7 @@ scheduler:
 logging:
   use_wandb: true
   project_name: "rerelora"
-  run_name: relora_rank2
+  run_name: c-relora_rank2
   log_dir: "./logs"
 
 # Checkpointing

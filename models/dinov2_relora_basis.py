@@ -217,16 +217,24 @@ class ReLoRALinear(nn.Module):
         residual = self.base(x)
 
         adapter_input = x
-        if self.input_basis is not None:
-            adapter_input = self.input_basis.right_multiply_transpose(adapter_input)
         if self.dropout is not None and self.training:
             adapter_input = self.dropout(adapter_input)
 
-        down = F.linear(adapter_input, self.A)
-        up = F.linear(down, self.B)
-        if self.output_basis is not None:
-            up = self.output_basis.right_multiply(up)
+        A_eff = self._effective_A()
+        down = F.linear(adapter_input, A_eff)
+        B_eff = self._effective_B()
+        up = F.linear(down, B_eff)
         return residual + self.scale * up
+
+    def _effective_A(self) -> Tensor:
+        if self.input_basis is None:
+            return self.A
+        return self.input_basis.right_multiply(self.A)
+
+    def _effective_B(self) -> Tensor:
+        if self.output_basis is None:
+            return self.B
+        return self.output_basis.right_multiply(self.B.T).T
 
     @torch.no_grad()
     def merge_into_base(self) -> None:
@@ -237,12 +245,9 @@ class ReLoRALinear(nn.Module):
             f"Shape mismatch: base {self.base.weight.shape} vs delta "
             f"{(self.B.size(0), self.A.size(1))}"
         )
-        delta_w = (self.B.float() @ self.A.float())
-        if self.input_basis is not None:
-            delta_w = self.input_basis.right_multiply(delta_w)
-        if self.output_basis is not None:
-            delta_w = self.output_basis.right_multiply(delta_w.T).T
-        delta_w = delta_w * float(self.scale)
+        A_eff = self._effective_A().float()
+        B_eff = self._effective_B().float()
+        delta_w = (B_eff @ A_eff) * float(self.scale)
         self.base.weight.data.add_(delta_w.to(self.base.weight.dtype))
 
     @torch.no_grad()
