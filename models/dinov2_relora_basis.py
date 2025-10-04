@@ -340,8 +340,6 @@ class DinoV2ReLoRAClassifier(nn.Module):
     def apply_relora(self, config: ReLoRAConfig) -> List[str]:
         for param in self.backbone.parameters():
             param.requires_grad_(False)
-        for param in self.classifier.parameters():
-            param.requires_grad_(False)
         return replace_linear_with_relora(self.backbone, config)
 
     def iter_relora_layers(self) -> Iterable[ReLoRALinear]:
