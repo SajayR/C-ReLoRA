@@ -16,7 +16,7 @@ model:
             enabled: true
             r: 4
             lora_alpha: 8
-            dropout: 0.04
+            dropout: 0.01
             target_modules: ["query", "key", "value", "dense", "fc1", "fc2"]
             keep_original_weights: true
             lora_only: false
