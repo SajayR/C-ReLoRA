@@ -5,31 +5,13 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, Iterable
 
-import torch
 import torch.nn as nn
 from peft import LoraConfig, TaskType, get_peft_model
 from transformers import Dinov2Model
 
+from .dinov2_common import DinoV2Classifier, set_module_trainable
+
 LOGGER = logging.getLogger(__name__)
-
-
-class DinoV2Classifier(nn.Module):
-    def __init__(self, backbone: nn.Module, hidden_size: int, num_classes: int, dropout: float):
-        super().__init__()
-        self.backbone = backbone
-        self.head = nn.Sequential(nn.Dropout(dropout), nn.Linear(hidden_size, num_classes))
-        nn.init.xavier_uniform_(self.head[-1].weight)
-        nn.init.zeros_(self.head[-1].bias)
-
-    def forward(self, pixel_values: torch.Tensor) -> torch.Tensor:
-        features = self.backbone(pixel_values=pixel_values)
-        cls_token = features.last_hidden_state[:, 0]
-        return self.head(cls_token)
-
-
-def _freeze_module(module: nn.Module, trainable: bool) -> None:
-    for param in module.parameters():
-        param.requires_grad = trainable
 
 
 def _build_lora_config(params: Dict[str, Any]) -> LoraConfig:
@@ -62,7 +44,7 @@ def build_model(model_name: str, num_classes: int, params: Dict[str, Any]) -> tu
         LOGGER.info("Enabled gradient checkpointing")
 
     if freeze_backbone:
-        _freeze_module(backbone, False)
+        set_module_trainable(backbone, False)
 
     lora_params = params.get("lora", {}) or {}
     lora_enabled = lora_params.get("enabled", True)

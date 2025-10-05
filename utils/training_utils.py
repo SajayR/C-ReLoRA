@@ -16,6 +16,23 @@ from torch.optim.lr_scheduler import LambdaLR
 LOGGER = logging.getLogger(__name__)
 
 
+def _resolve_steps(value: Any, total_steps: int) -> int:
+    if value is None:
+        return 0
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError) as exc:  # noqa: PERF203
+        raise ValueError(f"Scheduler step value '{value}' is not numeric") from exc
+    if numeric < 0:
+        raise ValueError(f"Scheduler step value must be non-negative, got {numeric}")
+    if numeric == 0:
+        return 0
+    if numeric < 1.0:
+        steps = int(total_steps * numeric)
+        return max(1, steps)
+    return int(round(numeric))
+
+
 def setup_logging(output_dir: Path, level: int = logging.INFO) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     handlers = [logging.StreamHandler()]
@@ -64,17 +81,71 @@ def create_optimizer(model: torch.nn.Module, cfg: Dict[str, Any]) -> torch.optim
 
 
 def create_scheduler(optimizer: torch.optim.Optimizer, cfg: Dict[str, Any], total_steps: int) -> Optional[LambdaLR]:
-    name = (cfg or {}).get("type", "cosine").lower()
-    if name in {"none", "constant"} or total_steps <= 0:
+    total_steps = int(total_steps)
+    if total_steps <= 0:
         return None
 
-    warmup_fraction = float(cfg.get("warmup", cfg.get("warmup_epochs", 0.0)))
-    if warmup_fraction < 1.0:
-        warmup_steps = int(total_steps * warmup_fraction)
-    else:
-        warmup_steps = int(warmup_fraction)
+    cfg = cfg or {}
+    name = cfg.get("type", "cosine").lower()
+    if name in {"none", "constant"}:
+        return None
 
-    min_lr_mult = float(cfg.get("min_lr_mult", cfg.get("min_lr_ratio", 0.01)))
+    min_lr_ratio = float(cfg.get("min_lr_mult", cfg.get("min_lr_ratio", 0.01)))
+    min_lr_ratio = min(max(min_lr_ratio, 0.0), 1.0)
+
+    if name == "cosine_restarts":
+        first_warmup_steps = _resolve_steps(
+            cfg.get("first_warmup_steps", cfg.get("warmup", cfg.get("warmup_epochs", 0))),
+            total_steps,
+        )
+        restart_every = _resolve_steps(cfg.get("restart_every"), total_steps)
+        if restart_every <= 0:
+            raise ValueError("cosine_restarts scheduler requires 'restart_every' > 0")
+        restart_warmup_steps = _resolve_steps(
+            cfg.get("restart_warmup_steps", max(1, restart_every // 10)), restart_every
+        )
+        total_after_warmup = max(1, total_steps - first_warmup_steps)
+
+        def envelope(step: int) -> float:
+            if first_warmup_steps and step < first_warmup_steps:
+                return step / max(1, first_warmup_steps)
+            progress = (step - first_warmup_steps) / float(total_after_warmup)
+            progress = min(max(progress, 0.0), 1.0)
+            return min_lr_ratio + 0.5 * (1.0 - min_lr_ratio) * (1.0 + math.cos(progress * math.pi))
+
+        def lr_lambda(step: int) -> float:
+            clamped_step = min(step, total_steps)
+            if first_warmup_steps and clamped_step < first_warmup_steps:
+                return max(envelope(clamped_step), 1e-6)
+
+            post_warmup = max(clamped_step - first_warmup_steps, 0)
+            cycle_index = post_warmup // restart_every
+            cycle_step = post_warmup % restart_every
+            if cycle_index == 0:
+                return envelope(clamped_step)
+
+            if cycle_step < restart_warmup_steps:
+                ramp_end_step = first_warmup_steps + cycle_index * restart_every + restart_warmup_steps
+                ramp_end_step = min(ramp_end_step, total_steps)
+                warmup_target = envelope(ramp_end_step)
+                ramp_fraction = cycle_step / max(1, restart_warmup_steps)
+                return warmup_target * ramp_fraction
+
+            return envelope(clamped_step)
+
+        scheduler = LambdaLR(optimizer, lr_lambda=lr_lambda)
+        LOGGER.info(
+            "Scheduler: %s total=%d first_warmup=%d restart_every=%d restart_warmup=%d min_lr_ratio=%.4f",
+            name,
+            total_steps,
+            first_warmup_steps,
+            restart_every,
+            restart_warmup_steps,
+            min_lr_ratio,
+        )
+        return scheduler
+
+    warmup_steps = _resolve_steps(cfg.get("warmup", cfg.get("warmup_epochs", 0)), total_steps)
 
     def lr_lambda(step: int) -> float:
         if warmup_steps and step < warmup_steps:
@@ -82,11 +153,17 @@ def create_scheduler(optimizer: torch.optim.Optimizer, cfg: Dict[str, Any], tota
         progress = (step - warmup_steps) / float(max(1, total_steps - warmup_steps))
         progress = min(max(progress, 0.0), 1.0)
         if name == "linear":
-            return (1.0 - progress) * (1.0 - min_lr_mult) + min_lr_mult
-        return min_lr_mult + 0.5 * (1.0 - min_lr_mult) * (1.0 + math.cos(progress * math.pi))
+            return (1.0 - progress) * (1.0 - min_lr_ratio) + min_lr_ratio
+        return min_lr_ratio + 0.5 * (1.0 - min_lr_ratio) * (1.0 + math.cos(progress * math.pi))
 
     scheduler = LambdaLR(optimizer, lr_lambda=lr_lambda)
-    LOGGER.info("Scheduler: %s warmup=%d steps total=%d", name, warmup_steps, total_steps)
+    LOGGER.info(
+        "Scheduler: %s warmup=%d steps total=%d min_lr_ratio=%.4f",
+        name,
+        warmup_steps,
+        total_steps,
+        min_lr_ratio,
+    )
     return scheduler
 
 

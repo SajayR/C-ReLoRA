@@ -53,6 +53,9 @@ class ReLoRaModel(torch.nn.Module):
 
         super().__init__()
         self.wrapped_model: nn.Module = model
+        # expose the underlying model config so downstream code using HuggingFace models keeps working
+        if hasattr(model, "config"):
+            self.config = model.config
         self.r = r
         self.lora_alpha = lora_alpha
         self.lora_dropout = lora_dropout
@@ -217,6 +220,13 @@ class ReLoRaLinear(nn.Module):
                 self.scaling = nn.Parameter(torch.tensor([1.]), requires_grad=True)
             else:
                 self.scaling = self.lora_alpha / self.r
+
+            w_dev  = weight_data.device if weight_data is not None else device
+            w_dtype = weight_data.dtype if weight_data is not None else dtype
+            self.lora_A.to(device=w_dev, dtype=w_dtype)
+            self.lora_B.to(device=w_dev, dtype=w_dtype)
+            if self.trainable_scaling and isinstance(self.scaling, nn.Parameter):
+                self.scaling.data = self.scaling.data.to(device=w_dev, dtype=w_dtype)
 
             # Freezing the pre-trained weight matrix
             if not self.lora_only:

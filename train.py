@@ -24,6 +24,7 @@ except ImportError:  # pragma: no cover - optional
 from configs import load_config
 from data import DatasetSpec, create_dataloaders
 from models import create as create_model
+from models.relora import ReLoRaLinear
 from utils.metrics import accuracy, top_k_accuracy
 from utils.training_utils import (
     create_optimizer,
@@ -219,6 +220,105 @@ class RunLogger:
             self.wandb_run.finish()
 
 
+class ReLoRAController:
+    def __init__(
+        self,
+        model: nn.Module,
+        *,
+        reset_every: int,
+        second_moment_keep_ratio: float = 0.01,
+        first_moment_prune_ratio: float | None = None,
+    ) -> None:
+        self.model = model
+        self.reset_every = max(int(reset_every), 0)
+        keep_ratio = float(second_moment_keep_ratio)
+        self.second_moment_keep_ratio = min(max(keep_ratio, 0.0), 1.0)
+        prune_ratio = (
+            float(first_moment_prune_ratio)
+            if first_moment_prune_ratio is not None
+            else 1.0 - self.second_moment_keep_ratio
+        )
+        prune_ratio = min(max(prune_ratio, 0.0), 1.0)
+        self.first_moment_keep_ratio = 1.0 - prune_ratio
+        self._parameters = self._collect_relora_parameters(model)
+        self._reset_count = 0
+        if self.reset_every <= 0:
+            LOGGER.warning("ReLoRA controller configured with non-positive reset interval")
+        if not self._parameters:
+            LOGGER.warning("ReLoRA controller enabled but no ReLoRA layers were found")
+
+    @property
+    def reset_count(self) -> int:
+        return self._reset_count
+
+    def maybe_step(self, global_step: int, optimizer: torch.optim.Optimizer) -> bool:
+        if self.reset_every <= 0:
+            return False
+        if not self._parameters:
+            return False
+        if global_step <= 0 or global_step % self.reset_every != 0:
+            return False
+
+        LOGGER.info("Running ReLoRA merge/reset at step %d", global_step)
+        merge_fn = getattr(self.model, "relora_merge_and_reinit", None)
+        if callable(merge_fn):
+            merge_fn()
+        else:
+            fallback_merge = getattr(self.model, "merge_and_reinit", None)
+            if callable(fallback_merge):
+                fallback_merge()
+            else:
+                LOGGER.warning("No merge_and_reinit method available on model; skipping ReLoRA merge")
+                return False
+
+        self._reset_optimizer_state(optimizer)
+        self._reset_count += 1
+        return True
+
+    def _collect_relora_parameters(self, module: nn.Module) -> tuple[nn.Parameter, ...]:
+        params = []
+        for layer in module.modules():
+            if isinstance(layer, ReLoRaLinear):
+                params.append(layer.lora_A.weight)
+                params.append(layer.lora_B.weight)
+                if layer.trainable_scaling and isinstance(layer.scaling, nn.Parameter):
+                    params.append(layer.scaling)
+        return tuple(params)
+
+    def _reset_optimizer_state(self, optimizer: torch.optim.Optimizer) -> None:
+        keep_ratio = self.second_moment_keep_ratio
+        for param in self._parameters:
+            state = optimizer.state.get(param)
+            if not state:
+                continue
+            exp_avg = state.get("exp_avg")
+            if exp_avg is not None:
+                keep = self.first_moment_keep_ratio
+                if keep <= 0.0:
+                    exp_avg.zero_()
+                elif keep < 1.0:
+                    self._prune_tensor_by_magnitude(exp_avg, keep)
+            exp_avg_sq = state.get("exp_avg_sq")
+            if exp_avg_sq is not None:
+                if keep_ratio <= 0.0:
+                    exp_avg_sq.zero_()
+                elif keep_ratio < 1.0:
+                    self._prune_tensor_by_magnitude(exp_avg_sq, keep_ratio)
+
+    @staticmethod
+    def _prune_tensor_by_magnitude(tensor: torch.Tensor, keep_ratio: float) -> None:
+        if tensor.numel() == 0:
+            return
+        keep = max(1, int(tensor.numel() * keep_ratio))
+        if keep >= tensor.numel():
+            return
+        flat = tensor.view(-1)
+        # torch.topk returns the largest entries sorted descending; last value is the lowest magnitude kept
+        threshold = torch.topk(flat.abs(), keep, largest=True).values.min()
+        mask = (flat.abs() >= threshold).to(flat.dtype)
+        flat.mul_(mask)
+
+
 def prepare_run_dirs(base_dir: Path, dataset_name: str, run_slug: str) -> Path:
     timestamp = time.strftime("%Y%m%d-%H%M%S")
     safe_slug = run_slug or _slugify(dataset_name) or "run"
@@ -249,6 +349,7 @@ def train_epoch(
     global_step: int,
     log_every: int,
     logger: RunLogger,
+    relora_ctrl: "ReLoRAController | None" = None,
 ) -> Dict[str, float]:
     model.train()
     criterion = nn.CrossEntropyLoss()
@@ -298,10 +399,17 @@ def train_epoch(
 
             global_step += 1
 
+            did_reset = False
+            if relora_ctrl is not None:
+                did_reset = relora_ctrl.maybe_step(global_step, optimizer)
+
             metrics = {
                 "train/loss": float(loss.item() * grad_accum),
                 "train/lr": optimizer.param_groups[0]["lr"],
             }
+            if did_reset:
+                metrics["train/relora_resets"] = relora_ctrl.reset_count
+                logger.log({"train/relora_resets": relora_ctrl.reset_count}, step=global_step)
             if monitor_cfg.get("grad_norm", True) and gn is not None:
                 metrics["train/grad_norm"] = gn
             if monitor_cfg.get("param_norm", False):
@@ -448,6 +556,31 @@ def run_dataset(
             optimizer, training_cfg.get("scheduler", {}), total_steps
         )
 
+        relora_ctrl = None
+        relora_cfg = training_cfg.get("relora", {}) or {}
+        if relora_cfg.get("enabled", False):
+            reset_every = int(relora_cfg.get("reset_every", relora_cfg.get("merge_every", 0)))
+            if reset_every > 0:
+                keep_ratio = float(
+                    relora_cfg.get(
+                        "second_moment_keep_ratio",
+                        relora_cfg.get("second_moment_keep_fraction", 0.01),
+                    )
+                )
+                first_prune = relora_cfg.get("first_moment_prune_ratio")
+                first_prune = float(first_prune) if first_prune is not None else None
+                relora_ctrl = ReLoRAController(
+                    model,
+                    reset_every=reset_every,
+                    second_moment_keep_ratio=keep_ratio,
+                    first_moment_prune_ratio=first_prune,
+                )
+            else:
+                LOGGER.warning(
+                    "ReLoRA controller enabled but reset_every=%s is not positive; controller disabled",
+                    reset_every,
+                )
+
         precision_cfg = training_cfg.get(
             "precision", {"enabled": True, "dtype": "bf16", "grad_scaler": False}
         )
@@ -490,6 +623,7 @@ def run_dataset(
                 global_step,
                 log_every,
                 run_logger,
+                relora_ctrl,
             )
             global_step = int(epoch_metrics["state/global_step"])
 
@@ -562,6 +696,9 @@ def run_dataset(
         }
         if best_path is not None:
             summary["best_checkpoint"] = str(best_path)
+        if relora_ctrl is not None:
+            summary["relora/resets"] = relora_ctrl.reset_count
+            summary["relora/reset_interval"] = relora_ctrl.reset_every
 
         run_logger.summary(summary)
         return summary
