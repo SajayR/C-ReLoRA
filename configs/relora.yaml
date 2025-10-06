@@ -1,6 +1,6 @@
 experiment:
     name: dinov2-relora
-    name_suffix: restart-4000steps
+    name_suffix: restart-4000steps-nodropout-gradclip1.0-nofc
     seed: 42
     device: auto
     output_dir: ./runs
@@ -10,23 +10,23 @@ model:
     params:
         model_name: facebook/dinov2-small
         dropout: 0.0
-        freeze_backbone: false
+        freeze_backbone: true
         gradient_checkpointing: false
         relora:
             enabled: true
             r: 4
             lora_alpha: 8
-            dropout: 0.01
-            target_modules: ["query", "key", "value", "dense", "fc1", "fc2"]
+            dropout: 0.00
+            target_modules: ["query", "key", "value", "dense"] #, "fc1", "fc2"]
             keep_original_weights: true
             lora_only: false
             trainable_scaling: false
 
 training:
     epochs: 10
-    gradient_clip_norm: 10.0
+    gradient_clip_norm: 1.0
     grad_accumulation: 1
-    log_every: 10
+    log_every: 1
     eval_every: 1
     save_every: 1
     precision:
@@ -43,7 +43,7 @@ training:
         type: cosine_restarts
         first_warmup_steps: 2000
         restart_every: 4000
-        restart_warmup_steps: 200
+        restart_warmup_steps: 400
         min_lr_ratio: 0.1
     relora:
         enabled: true

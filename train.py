@@ -7,6 +7,7 @@ import json
 import logging
 import re
 import time
+from collections import defaultdict
 from copy import deepcopy
 from pathlib import Path
 from typing import Dict, Iterable, List
@@ -557,6 +558,31 @@ def run_dataset(
         model_params.setdefault("num_classes", dataset_info.num_classes)
         model, model_meta = create_model(model_name, model_params, dataset_info)
         model.to(device)
+
+        trainable_map: dict[str, list[str]] = defaultdict(list)
+        total_trainable_tensors = 0
+        for name, parameter in model.named_parameters():
+            if not parameter.requires_grad:
+                continue
+            total_trainable_tensors += 1
+            if "." in name:
+                module_name, param_name = name.rsplit(".", 1)
+            else:
+                module_name, param_name = "[root]", name
+            shape_str = "x".join(str(dim) for dim in parameter.shape)
+            trainable_map[module_name].append(f"{param_name}({shape_str})")
+
+        if not trainable_map:
+            LOGGER.warning("No trainable parameters detected; all parameters are frozen")
+        else:
+            LOGGER.info(
+                "Trainable parameter summary: %d tensors across %d modules",
+                total_trainable_tensors,
+                len(trainable_map),
+            )
+            for module_name, items in sorted(trainable_map.items()):
+                pretty = ", ".join(items)
+                LOGGER.info("Training module: %s | params: %s", module_name, pretty)
 
         optimizer = create_optimizer(model, training_cfg.get("optimizer", {}))
         total_steps = len(train_loader) * max(int(training_cfg.get("epochs", 1)), 1)

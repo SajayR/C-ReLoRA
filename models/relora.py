@@ -194,8 +194,12 @@ class ReLoRaLinear(nn.Module):
         else:
             # if full model weight + lora weight
             if bias_data is None:
-                bias_data = torch.zeros(out_features, device=device, dtype=dtype, requires_grad=True) if bias else None
-            self.bias = nn.Parameter(bias_data) if bias else None
+                bias_data = (
+                    torch.zeros(out_features, device=device, dtype=dtype, requires_grad=False)
+                    if bias
+                    else None
+                )
+            self.bias = nn.Parameter(bias_data, requires_grad=False) if bias else None
 
             if weight_data is None:
                 # note that our trainable weight are W_a and W_b
