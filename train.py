@@ -388,6 +388,12 @@ def train_epoch(
             clip_val = precision_cfg.get("grad_clip", None)
             if clip_val:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), clip_val)
+                if monitor_cfg.get("grad_norm", True):
+                    gn_post = grad_norm(model.parameters())
+                else:
+                    gn_post = None
+            else:
+                gn_post = gn
             if scaler.is_enabled():
                 scaler.step(optimizer)
                 scaler.update()
@@ -412,6 +418,8 @@ def train_epoch(
                 logger.log({"train/relora_resets": relora_ctrl.reset_count}, step=global_step)
             if monitor_cfg.get("grad_norm", True) and gn is not None:
                 metrics["train/grad_norm"] = gn
+                if gn_post is not None:
+                    metrics["train/grad_norm_post_clip"] = gn_post
             if monitor_cfg.get("param_norm", False):
                 metrics["train/param_norm"] = param_norm(model.parameters())
             if monitor_cfg.get("memory", False) and torch.cuda.is_available():

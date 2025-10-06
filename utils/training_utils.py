@@ -115,18 +115,17 @@ def create_scheduler(optimizer: torch.optim.Optimizer, cfg: Dict[str, Any], tota
 
         def lr_lambda(step: int) -> float:
             clamped_step = min(step, total_steps)
-            if first_warmup_steps and clamped_step < first_warmup_steps:
-                return max(envelope(clamped_step), 1e-6)
+            cycle_index = clamped_step // restart_every
+            cycle_step = clamped_step % restart_every
 
-            post_warmup = max(clamped_step - first_warmup_steps, 0)
-            cycle_index = post_warmup // restart_every
-            cycle_step = post_warmup % restart_every
             if cycle_index == 0:
+                if first_warmup_steps and clamped_step < first_warmup_steps:
+                    return max(envelope(clamped_step), 1e-6)
                 return envelope(clamped_step)
 
             if cycle_step < restart_warmup_steps:
-                ramp_end_step = first_warmup_steps + cycle_index * restart_every + restart_warmup_steps
-                ramp_end_step = min(ramp_end_step, total_steps)
+                cycle_start = cycle_index * restart_every
+                ramp_end_step = min(cycle_start + restart_warmup_steps, total_steps)
                 warmup_target = envelope(ramp_end_step)
                 ramp_fraction = cycle_step / max(1, restart_warmup_steps)
                 return warmup_target * ramp_fraction
