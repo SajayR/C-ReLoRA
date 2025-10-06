@@ -20,7 +20,6 @@ class ReLoRaConfig:
     lora_only: bool = False
     trainable_scaling: bool = False
 
-
 def merge_and_reinit_functional(module):
     if not isinstance(module, ReLoRaLinear):
         return

@@ -1,0 +1,84 @@
+experiment:
+    name: dinov2-c-relora
+    name_suffix: restart-4000steps-nodropout-gradclip1.0-nofc
+    seed: 42
+    device: auto
+    output_dir: ./runs
+
+model:
+    name: dinov2_c_relora
+    params:
+        model_name: facebook/dinov2-small
+        dropout: 0.0
+        freeze_backbone: true
+        gradient_checkpointing: false
+        relora:
+            enabled: true
+            r: 4
+            lora_alpha: 8
+            dropout: 0.00
+            target_modules: ["query", "key", "value", "dense"] #, "fc1", "fc2"]
+            keep_original_weights: true
+            lora_only: false
+            trainable_scaling: false
+            use_c_relora: true
+            c_relora_seed: 1234567
+            c_relora_share_per_width: true
+
+training:
+    epochs: 10
+    gradient_clip_norm: 1.0
+    grad_accumulation: 1
+    log_every: 1
+    eval_every: 1
+    save_every: 1
+    precision:
+        enabled: true
+        dtype: bf16
+        grad_scaler: false
+    optimizer:
+        type: adamw
+        lr: 0.0005
+        weight_decay: 0.01
+        betas: [0.9, 0.999]
+        eps: 0.00000001
+    scheduler:
+        type: cosine_restarts
+        first_warmup_steps: 2000
+        restart_every: 4000
+        restart_warmup_steps: 400
+        min_lr_ratio: 0.1
+    relora:
+        enabled: true
+        reset_every: 4000
+        second_moment_keep_ratio: 0.01
+        first_moment_prune_ratio: 0.99
+    monitor:
+        grad_norm: true
+        param_norm: true
+        memory: true
+
+data:
+    root: /speedy/datasets
+    image_size: 224
+    batch_size: 196
+    num_workers: 8
+    pin_memory: true
+    persistent_workers: true
+    normalization: dinov2
+    augment: true
+    drop_last: true
+
+logging:
+    use_wandb: true
+    project: ReLoRAFuck
+    entity: null
+    run_name: null
+    group: null
+    tags: ["dinov2", "c-relora"]
+    notes: null
+
+datasets:
+    - name: ImageNet
+      val_split: test
+      normalization: dinov2

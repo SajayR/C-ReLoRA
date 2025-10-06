@@ -25,7 +25,11 @@ except ImportError:  # pragma: no cover - optional
 from configs import load_config
 from data import DatasetSpec, create_dataloaders
 from models import create as create_model
-from models.relora import ReLoRaLinear
+from models.relora import ReLoRaLinear as _StdReLoRaLinear
+try:  # Optional: C-ReLoRA adapters live alongside the classic ones
+    from models.C_relora import ReLoRaLinear as _CReLoRaLinear
+except ImportError:  # pragma: no cover - present only when C-ReLoRA copied in
+    _CReLoRaLinear = None
 from utils.metrics import accuracy, top_k_accuracy
 from utils.training_utils import (
     create_optimizer,
@@ -41,6 +45,23 @@ import os
 os.environ["TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL"] = "1"
 
 LOGGER = logging.getLogger("train")
+
+
+def _collect_relora_linear_types() -> tuple[type, ...]:
+    candidates = []
+    for candidate in (_StdReLoRaLinear, _CReLoRaLinear):
+        if isinstance(candidate, type):
+            candidates.append(candidate)
+    return tuple(candidates)
+
+
+RELORA_LINEAR_TYPES = _collect_relora_linear_types()
+
+
+def _is_relora_linear(module: nn.Module) -> bool:
+    if not RELORA_LINEAR_TYPES:
+        return False
+    return any(isinstance(module, cls) for cls in RELORA_LINEAR_TYPES)
 
 
 def _slugify(value: str | None) -> str:
@@ -279,7 +300,7 @@ class ReLoRAController:
     def _collect_relora_parameters(self, module: nn.Module) -> tuple[nn.Parameter, ...]:
         params = []
         for layer in module.modules():
-            if isinstance(layer, ReLoRaLinear):
+            if _is_relora_linear(layer):
                 params.append(layer.lora_A.weight)
                 params.append(layer.lora_B.weight)
                 if layer.trainable_scaling and isinstance(layer.scaling, nn.Parameter):
