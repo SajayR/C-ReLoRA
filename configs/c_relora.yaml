@@ -51,7 +51,7 @@ training:
     relora:
         enabled: true
         reset_every: 4000
-        second_moment_keep_ratio: 0.01
+        second_moment_keep_ratio: 0.20
         first_moment_prune_ratio: 0.99
     monitor:
         grad_norm: true
